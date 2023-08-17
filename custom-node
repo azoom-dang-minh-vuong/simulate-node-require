@@ -1,0 +1,100 @@
+#!/usr/bin/env node
+const requireBuildInModule = require
+const fs = require('fs')
+const path = require('path')
+const load = require('./loader')
+
+function resolveModulePathFromAbsolutePath(absolutePath) {
+  let isExist = fs.existsSync(absolutePath)
+  if (isExist) {
+    // maybe a directory or file
+    const isFile = fs.statSync(absolutePath).isFile()
+    if (isFile) return absolutePath
+    // is a directory
+    const packageJsonPath = path.join(absolutePath, 'package.json')
+    if (fs.existsSync(packageJsonPath)) {
+      const { main: entrypointOfModule } = JSON.parse(
+        fs.readFileSync(packageJsonPath, 'utf8')
+      )
+      if (entrypointOfModule) {
+        return path.join(absolutePath, entrypointOfModule)
+      }
+    }
+    return path.join(absolutePath, 'index.js')
+  }
+  if (!absolutePath.endsWith('.js')) {
+    const moduleAbsolutePathWithJsExt = absolutePath + '.js'
+    if (fs.existsSync(moduleAbsolutePathWithJsExt))
+      return moduleAbsolutePathWithJsExt
+  }
+  return null
+}
+
+const entry = path.resolve(process.cwd(), process.argv[2])
+const entryFilename = resolveModulePathFromAbsolutePath(entry)
+if (!entryFilename) throw new Error(`Cannot find module '${entry}'`)
+
+const modules = {}
+const requireCustomModule = moduleAbsolutePath => {
+  if (Object.prototype.hasOwnProperty.call(modules, moduleAbsolutePath))
+    return modules[moduleAbsolutePath].exports
+
+  const __filename = moduleAbsolutePath
+  const __dirname = path.dirname(moduleAbsolutePath)
+  const module = {
+    id: __filename,
+    filename: __filename,
+    path: __dirname,
+    exports: {},
+  }
+  modules[moduleAbsolutePath] = module
+  // load json module
+  if (moduleAbsolutePath.endsWith('.json')) {
+    const code = fs.readFileSync(moduleAbsolutePath, 'utf8')
+    module.exports = JSON.parse(code)
+    return module.exports
+  }
+
+  const require = modulePath => {
+    // path is "/root/abc.js"
+    if (path.isAbsolute(modulePath)) {
+      const moduleAbsolutePath = resolveModulePathFromAbsolutePath(modulePath)
+      if (!moduleAbsolutePath)
+        throw new Error(`Cannot find module ${modulePath}`)
+      return requireCustomModule(moduleAbsolutePath)
+    }
+    // path is "./abc.js"
+    if (modulePath.startsWith('.')) {
+      const moduleAbsolutePath = resolveModulePathFromAbsolutePath(
+        path.join(__dirname, modulePath)
+      )
+      if (!moduleAbsolutePath)
+        throw new Error(`Cannot find module ${modulePath}`)
+      return requireCustomModule(moduleAbsolutePath)
+    }
+
+    // path may be a module in node_modules
+    const splitedPaths = __dirname.split('/')
+    for (let i = splitedPaths.length; i >= 1; i--) {
+      const pathInNodeModules =
+        '/' + path.join(...splitedPaths.slice(0, i), 'node_modules', modulePath)
+
+      const moduleAbsolutePath =
+        resolveModulePathFromAbsolutePath(pathInNodeModules)
+      if (moduleAbsolutePath) {
+        return requireCustomModule(moduleAbsolutePath)
+      }
+    }
+    // path is a build-in module
+    return requireBuildInModule(modulePath)
+  }
+  module.require = require
+  require.main = modules[entryFilename]
+
+  load(module.exports, require, module, __filename, __dirname)
+  return module.exports
+}
+
+requireCustomModule(entryFilename)
+
+console.log(modules)
